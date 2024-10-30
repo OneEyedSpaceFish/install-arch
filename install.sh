@@ -85,7 +85,7 @@ swapon /dev/nvme0n1p2
 confirm "Swap setup complete. Continue with encryption setup?"
 
 # Setup encryption
-cryptsetup luksFormat --type luks2 -c aes-xts-plain64 -s 512 -h sha512 /dev/nvme0n1p3
+cryptsetup luksFormat --type luks2 -c aes-xts-plain64 -s 512 -h sha512 -y /dev/nvme0n1p3
 cryptsetup open /dev/nvme0n1p3 cryptlvm
 
 confirm "Encryption setup complete. Continue with LVM setup?"
@@ -148,10 +148,6 @@ cat << HOSTS > /etc/hosts
 ::1         localhost
 127.0.1.1   usagi.localdomain    usagi
 HOSTS
-
-# Set root password
-echo "Please set root password:"
-passwd
 
 # Configure ethernet
 cat << NETWORK > /etc/systemd/network/20-wired.network
@@ -316,15 +312,20 @@ sed -i '/\[multilib\]/,/Include/s/^#//' /etc/pacman.conf
 sed -i "s/#MAKEFLAGS=\"-j2\"/MAKEFLAGS=\"-j\$(nproc)\"/" /etc/makepkg.conf
 sed -i "s/COMPRESSXZ=(xz -c -z -)/COMPRESSXZ=(xz -c -z - --threads=0)/" /etc/makepkg.conf
 
-# Create user
+# Create user without setting password
 useradd -m -G wheel,video,audio -s /bin/bash senpai
-echo "Please set password for user senpai:"
-passwd senpai
 
 # Configure sudo
 echo "%wheel ALL=(ALL) ALL" > /etc/sudoers.d/wheel
 
 EOF
+
+# Set passwords interactively after the chroot
+echo "Please set root password:"
+arch-chroot /mnt passwd
+
+echo "Please set password for user senpai:"
+arch-chroot /mnt passwd senpai
 
 confirm "System configuration complete. Ready to unmount and reboot?"
 
