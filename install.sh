@@ -84,8 +84,14 @@ swapon /dev/nvme0n1p2
 
 confirm "Swap setup complete. Continue with encryption setup?"
 
-# Setup encryption
-cryptsetup luksFormat --type luks2 -c aes-xts-plain64 -s 512 -h sha512 -y /dev/nvme0n1p3
+# Setup encryption with optimized parameters
+cryptsetup luksFormat --type luks2 \
+    -c aes-xts-plain64 -s 512 \
+    -h sha512 \
+    --pbkdf argon2id \
+    --iter-time 5000 \
+    -y /dev/nvme0n1p3
+
 cryptsetup open /dev/nvme0n1p3 cryptlvm
 
 confirm "Encryption setup complete. Continue with LVM setup?"
@@ -117,7 +123,9 @@ confirm "Partitions mounted. Continue with base system installation?"
 pacstrap /mnt base base-devel linux linux-headers linux-firmware \
     intel-ucode nvidia nvidia-utils \
     neovim git \
-    cpupower nfs-utils hdparm
+    cpupower nfs-utils hdparm \
+    lvm2 cryptsetup systemd \
+    mkinitcpio
 
 # Generate and optimize fstab
 genfstab -U /mnt > /mnt/etc/fstab
@@ -170,22 +178,35 @@ systemctl enable systemd-resolved
 # Create symlink for DNS resolution
 ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 
-# Install and configure bootloader
+# Install and configure systemd-boot
 bootctl install
 cat << BOOTLOADER > /boot/loader/loader.conf
-default arch
+default arch.conf
 timeout 3
 editor 0
+console-mode max
 BOOTLOADER
 
 # Configure kernel parameters - optimized for Intel CPU and NVIDIA GPU
-PARTUUID=$(blkid -s PARTUUID -o value /dev/nvme0n1p3)
+CRYPTUUID=$(blkid -s UUID -o value /dev/nvme0n1p3)
 cat << BOOTLOADER > /boot/loader/entries/arch.conf
 title Arch Linux
 linux /vmlinuz-linux
 initrd /intel-ucode.img
 initrd /initramfs-linux.img
-options cryptdevice=PARTUUID=$PARTUUID:cryptlvm:allow-discards root=/dev/vg0/root quiet rw nvidia-drm.modeset=1 nouveau.modeset=0 nmi_watchdog=0 audit=0 nowatchdog nvidia.NVreg_PreserveVideoMemoryAllocations=1 nvidia-drm.fbdev=1 intel_pstate=active intel_iommu=on iommu=pt pcie_aspm=off
+options rd.luks.name=$CRYPTUUID=cryptlvm root=/dev/vg0/root rw quiet splash \
+    nvidia-drm.modeset=1 \
+    nouveau.modeset=0 \
+    rd.luks.options=discard \
+    nmi_watchdog=0 \
+    audit=0 \
+    nowatchdog \
+    nvidia.NVreg_PreserveVideoMemoryAllocations=1 \
+    nvidia-drm.fbdev=1 \
+    intel_pstate=active \
+    intel_iommu=on \
+    iommu=pt \
+    pcie_aspm=off
 BOOTLOADER
 
 # Configure environment variables
@@ -200,9 +221,17 @@ VISUAL=nvim
 ENVVARS
 
 # Configure mkinitcpio
-sed -i 's/^MODULES=()/MODULES=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)/' /etc/mkinitcpio.conf
-sed -i 's/^HOOKS=(base udev autodetect modconf block filesystems keyboard fsck)/HOOKS=(base udev autodetect modconf block encrypt lvm2 filesystems keyboard fsck)/' /etc/mkinitcpio.conf
-mkinitcpio -p linux
+cat << MKINIT > /etc/mkinitcpio.conf
+MODULES=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)
+BINARIES=(/usr/bin/cryptsetup)
+FILES=()
+HOOKS=(base systemd autodetect modconf block sd-encrypt lvm2 filesystems keyboard fsck)
+COMPRESSION="lz4"
+COMPRESSION_OPTIONS=(-9)
+MKINIT
+
+# Regenerate initramfs
+mkinitcpio -P
 
 # Enable essential services
 systemctl enable nvidia-persistenced.service
@@ -268,9 +297,7 @@ After=multi-user.target
 
 [Service]
 Type=oneshot
-# Optimize write back timing for NVMe
 ExecStart=/usr/bin/bash -c 'echo 1500 > /proc/sys/vm/dirty_writeback_centisecs'
-# Set relatively aggressive write back for desktop performance
 ExecStart=/usr/bin/bash -c 'echo 10 > /proc/sys/vm/dirty_ratio'
 ExecStart=/usr/bin/bash -c 'echo 5 > /proc/sys/vm/dirty_background_ratio'
 RemainAfterExit=yes
